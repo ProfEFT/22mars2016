@@ -1023,54 +1023,60 @@
 <footer>
   <p>Commémorations du <strong style="color:#e8e0cc;">22 mars 2016</strong> · Devoir de mémoire scolaire</p>
   <p style="margin-top:6px;color:#666;">Sous la responsabilité de <span style="color:var(--accent-gold);">D. Gorts</span></p>
-  <p style="margin-top:8px; color:#444;">Application pédagogique — Les données sont stockées localement sur cet appareil.</p>
+  <p style="margin-top:8px; color:#444;">Application pédagogique — Les données sont stockées de manière sécurisée dans le cloud.</p>
 </footer>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
 
-/* ═══════════════════════════════════════════════════════
-   DATA LAYER — prêt pour Firebase
-   Pour connecter Firebase : remplacer DB.getAll / DB.add / DB.remove
-   par les équivalents Firestore (collection / addDoc / deleteDoc)
-═══════════════════════════════════════════════════════ */
-const DB = (() => {
-  const KEY = 'memorial_22mars2016_v1';
-  function getAll() {
-    try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; }
-  }
-  function save(data) { localStorage.setItem(KEY, JSON.stringify(data)); }
-  function add(entry) {
-    const data = getAll();
-    entry.id = Date.now() + '_' + Math.random().toString(36).slice(2,7);
-    entry.createdAt = new Date().toISOString();
-    entry.type = 'temoignage';
-    data.unshift(entry);
-    save(data);
-    return entry;
-  }
-  function remove(id) { save(getAll().filter(e => e.id !== id)); }
-  return { getAll, add, remove };
-})();
 
-const DB_CEJOUR = (() => {
-  const KEY = 'memorial_22mars2016_cejour_v1';
-  function getAll() {
-    try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; }
+/* ═══════════════════════════════════════════════════════
+   DATA LAYER — Supabase
+═══════════════════════════════════════════════════════ */
+const SUPABASE_URL  = 'https://jyceifcobwdsjmlgljny.supabase.co';
+const SUPABASE_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp5Y2VpZmNvYndkc2ptbGdsam55Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2NzI2MjAsImV4cCI6MjA4OTI0ODYyMH0.XTM15LTJ3WXVgLWpcCRqCB1OXYYcIl3bQPN5bkZDhHk';
+
+async function sbFetch(path, options = {}) {
+  const res = await fetch(SUPABASE_URL + '/rest/v1/' + path, {
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': options.prefer || 'return=representation',
+      ...options.headers
+    },
+    ...options
+  });
+  if (!res.ok) { const t = await res.text(); throw new Error(t); }
+  const text = await res.text();
+  return text ? JSON.parse(text) : [];
+}
+
+const DB = {
+  async getAll() {
+    const rows = await sbFetch('temoignages?select=*&order=created_at.desc');
+    return rows.map(r => ({ id: r.id, prenom: r.prenom, message: r.message, createdAt: r.created_at, type: 'temoignage' }));
+  },
+  async add(entry) {
+    await sbFetch('temoignages', { method: 'POST', body: JSON.stringify({ prenom: entry.prenom, message: entry.message }) });
+  },
+  async remove(id) {
+    await sbFetch('temoignages?id=eq.' + id, { method: 'DELETE', prefer: 'return=minimal' });
   }
-  function save(data) { localStorage.setItem(KEY, JSON.stringify(data)); }
-  function add(entry) {
-    const data = getAll();
-    entry.id = Date.now() + '_' + Math.random().toString(36).slice(2,7);
-    entry.createdAt = new Date().toISOString();
-    entry.type = 'cejour';
-    data.unshift(entry);
-    save(data);
-    return entry;
+};
+
+const DB_CEJOUR = {
+  async getAll() {
+    const rows = await sbFetch('cejour?select=*&order=created_at.desc');
+    return rows.map(r => ({ id: r.id, prenom: r.prenom, message: r.message, age: r.age, createdAt: r.created_at, type: 'cejour' }));
+  },
+  async add(entry) {
+    await sbFetch('cejour', { method: 'POST', body: JSON.stringify({ prenom: entry.prenom, message: entry.message, age: entry.age || '' }) });
+  },
+  async remove(id) {
+    await sbFetch('cejour?id=eq.' + id, { method: 'DELETE', prefer: 'return=minimal' });
   }
-  function remove(id) { save(getAll().filter(e => e.id !== id)); }
-  return { getAll, add, remove };
-})();
+};
 
 /* ─── State ─── */
 const ADMIN_PWD = 'BXLUCL2016';
@@ -1142,34 +1148,50 @@ document.getElementById('btn-confirm-autre').addEventListener('click', () => {
 document.getElementById('btn-confirm-home').addEventListener('click', () => showView('home'));
 
 /* ─── Form ─── */
-function submitForm() {
+async function submitForm() {
   const prenom = document.getElementById('fieldPrenom').value.trim();
   const msg    = document.getElementById('fieldMessage').value.trim();
   if (!prenom) return showAlert('formAlert', 'Veuillez renseigner votre prénom.', 'error');
   if (!msg)    return showAlert('formAlert', 'Veuillez écrire votre message avant d\'envoyer.', 'error');
   if (msg.length < 10) return showAlert('formAlert', 'Votre message est trop court.', 'error');
-  DB.add({ prenom, message: msg });
-  document.getElementById('fieldPrenom').value = '';
-  document.getElementById('fieldMessage').value = '';
-  showConfirmation('form');
+  const btn = document.getElementById('btn-submit-form');
+  btn.textContent = 'Envoi en cours…'; btn.disabled = true;
+  try {
+    await DB.add({ prenom, message: msg });
+    document.getElementById('fieldPrenom').value = '';
+    document.getElementById('fieldMessage').value = '';
+    showConfirmation('form');
+  } catch(e) {
+    showAlert('formAlert', 'Erreur lors de l\'envoi. Veuillez réessayer.', 'error');
+  } finally {
+    btn.textContent = 'Envoyer mon témoignage'; btn.disabled = false;
+  }
 }
 
 const btnSubmit = document.getElementById('btn-submit-form');
 if (btnSubmit) btnSubmit.addEventListener('click', submitForm);
 
 /* ─── Ce jour-là form ─── */
-function submitCejour() {
+async function submitCejour() {
   const prenom = document.getElementById('cejourPrenom').value.trim();
   const age    = document.getElementById('cejourAge').value.trim();
   const msg    = document.getElementById('cejourMessage').value.trim();
   if (!prenom) return showAlert('cejourAlert', 'Veuillez renseigner votre prénom.', 'error');
   if (!msg)    return showAlert('cejourAlert', 'Veuillez écrire votre récit avant d\'envoyer.', 'error');
   if (msg.length < 10) return showAlert('cejourAlert', 'Votre récit est trop court.', 'error');
-  DB_CEJOUR.add({ prenom, age, message: msg });
-  document.getElementById('cejourPrenom').value = '';
-  document.getElementById('cejourAge').value = '';
-  document.getElementById('cejourMessage').value = '';
-  showConfirmation('cejour');
+  const btn = document.getElementById('btn-submit-cejour');
+  btn.textContent = 'Envoi en cours…'; btn.disabled = true;
+  try {
+    await DB_CEJOUR.add({ prenom, age, message: msg });
+    document.getElementById('cejourPrenom').value = '';
+    document.getElementById('cejourAge').value = '';
+    document.getElementById('cejourMessage').value = '';
+    showConfirmation('cejour');
+  } catch(e) {
+    showAlert('cejourAlert', 'Erreur lors de l\'envoi. Veuillez réessayer.', 'error');
+  } finally {
+    btn.textContent = 'Envoyer mon récit'; btn.disabled = false;
+  }
 }
 
 const btnSubmitCejour = document.getElementById('btn-submit-cejour');
@@ -1178,36 +1200,40 @@ if (btnSubmitCejour) btnSubmitCejour.addEventListener('click', submitCejour);
 /* ─── Wall ─── */
 let anonCounter = { temoignage: 0, cejour: 0 };
 
-function renderWall() {
-  const list = [...DB.getAll(), ...DB_CEJOUR.getAll()]
-    .sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt)); // oldest first for stable numbering
-  document.getElementById('wallCount').textContent = list.length;
+async function renderWall() {
   const container = document.getElementById('testimonialsList');
-  if (list.length === 0) {
-    container.innerHTML = `<div class="empty-state"><div class="icon">🕊</div><p>Aucun témoignage pour l'instant.<br>Soyez le premier à partager votre réflexion.</p></div>`;
-    return;
-  }
-  let tNum = 0, cNum = 0;
-  container.innerHTML = list.map(e => {
-    const isCejour = e.type === 'cejour';
-    if (isCejour) cNum++; else tNum++;
-    const anonName = isCejour ? `Élève ${cNum}` : `Élève ${tNum}`;
-    const label = isCejour
-      ? `<span style="font-size:0.68rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:#7a5c8a;background:#f0eaf5;padding:2px 8px;border-radius:20px;">Ce jour-là</span>`
-      : `<span style="font-size:0.68rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--accent-gold);background:#faf5e8;padding:2px 8px;border-radius:20px;">Témoignage</span>`;
-    return `
-    <div class="testimonial-card">
-      <div class="testimonial-meta">
-        <div>
-          <div class="testimonial-name">${anonName} ${label}</div>
-          ${e.classe ? `<span class="testimonial-class">${esc(e.classe)}</span>` : ''}
-          ${e.age && isCejour ? `<span class="testimonial-class" style="color:#7a5c8a;">${esc(e.age)}</span>` : ''}
+  container.innerHTML = `<div class="empty-state"><div class="icon">⏳</div><p>Chargement des témoignages…</p></div>`;
+  try {
+    const [t, c] = await Promise.all([DB.getAll(), DB_CEJOUR.getAll()]);
+    const list = [...t, ...c].sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt));
+    document.getElementById('wallCount').textContent = list.length;
+    if (list.length === 0) {
+      container.innerHTML = `<div class="empty-state"><div class="icon">🕊</div><p>Aucun témoignage pour l'instant.<br>Soyez le premier à partager votre réflexion.</p></div>`;
+      return;
+    }
+    let tNum = 0, cNum = 0;
+    container.innerHTML = list.map(e => {
+      const isCejour = e.type === 'cejour';
+      if (isCejour) cNum++; else tNum++;
+      const anonName = isCejour ? `Élève ${cNum}` : `Élève ${tNum}`;
+      const label = isCejour
+        ? `<span style="font-size:0.68rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:#7a5c8a;background:#f0eaf5;padding:2px 8px;border-radius:20px;">Ce jour-là</span>`
+        : `<span style="font-size:0.68rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--accent-gold);background:#faf5e8;padding:2px 8px;border-radius:20px;">Témoignage</span>`;
+      return `
+      <div class="testimonial-card">
+        <div class="testimonial-meta">
+          <div>
+            <div class="testimonial-name">${anonName} ${label}</div>
+            ${e.age && isCejour ? `<span class="testimonial-class" style="color:#7a5c8a;">${esc(e.age)}</span>` : ''}
+          </div>
+          <div class="testimonial-date">${formatDate(e.createdAt)}</div>
         </div>
-        <div class="testimonial-date">${formatDate(e.createdAt)}</div>
-      </div>
-      <div class="testimonial-message">${esc(e.message).replace(/\n/g,'<br>')}</div>
-    </div>`;
-  }).join('');
+        <div class="testimonial-message">${esc(e.message).replace(/\n/g,'<br>')}</div>
+      </div>`;
+    }).join('');
+  } catch(err) {
+    container.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Erreur de chargement. Vérifiez votre connexion.</p></div>`;
+  }
 }
 
 /* ─── Admin ─── */
@@ -1234,14 +1260,49 @@ function adminLogout() {
   showView('home');
 }
 
-function renderAdmin() {
-  const list = [...DB.getAll(), ...DB_CEJOUR.getAll()]
-    .sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
-  const today = new Date().toDateString();
-  const todayCount = list.filter(e => new Date(e.createdAt).toDateString() === today).length;
-  document.getElementById('adminStats').innerHTML = `
-    <div class="stat-box"><span class="val">${list.length}</span><span class="lbl">Total</span></div>
-    <div class="stat-box"><span class="val">${DB.getAll().length}</span><span class="lbl">Témoignages</span></div>
+async function renderAdmin() {
+  document.getElementById('adminStats').innerHTML = `<div class="stat-box"><span class="val">…</span><span class="lbl">Chargement</span></div>`;
+  try {
+    const [t, c] = await Promise.all([DB.getAll(), DB_CEJOUR.getAll()]);
+    const list = [...t, ...c].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const today = new Date().toDateString();
+    const todayCount = list.filter(e => new Date(e.createdAt).toDateString() === today).length;
+    document.getElementById('adminStats').innerHTML = `
+      <div class="stat-box"><span class="val">${list.length}</span><span class="lbl">Total</span></div>
+      <div class="stat-box"><span class="val">${t.length}</span><span class="lbl">Témoignages</span></div>
+      <div class="stat-box"><span class="val">${c.length}</span><span class="lbl">Ce jour-là</span></div>
+      <div class="stat-box"><span class="val">${todayCount}</span><span class="lbl">Aujourd'hui</span></div>
+    `;
+    if (list.length === 0) {
+      document.getElementById('adminTable').style.display = 'none';
+      document.getElementById('adminEmpty').style.display = 'block';
+      return;
+    }
+    document.getElementById('adminTable').style.display = 'table';
+    document.getElementById('adminEmpty').style.display = 'none';
+    document.getElementById('adminTableBody').innerHTML = list.map((e, i) => {
+      const isCejour = e.type === 'cejour';
+      const typeLabel = isCejour
+        ? `<span style="font-size:0.68rem;color:#7a5c8a;font-weight:600;">Ce jour-là</span>`
+        : `<span style="font-size:0.68rem;color:var(--accent-gold);font-weight:600;">Témoignage</span>`;
+      const dbRef = isCejour ? 'DB_CEJOUR' : 'DB';
+      return `
+      <tr>
+        <td style="color:var(--text-muted);font-size:0.8rem">${i+1}</td>
+        <td>${typeLabel}</td>
+        <td><strong>${esc(e.prenom)}</strong>${e.age && isCejour ? `<br><span style="font-size:0.78rem;color:var(--text-muted)">${esc(e.age)}</span>` : ''}</td>
+        <td class="msg-cell">${esc(e.message).substring(0,120)}${e.message.length > 120 ? '…' : ''}</td>
+        <td style="color:var(--text-muted);white-space:nowrap;font-size:0.8rem">${formatDate(e.createdAt)}</td>
+        <td><button class="btn-danger btn-delete" data-id="${e.id}" data-db="${dbRef}">Supprimer</button></td>
+      </tr>`;
+    }).join('');
+    document.querySelectorAll('.btn-delete').forEach(btn => {
+      btn.addEventListener('click', () => askDelete(btn.dataset.id, btn.dataset.db));
+    });
+  } catch(err) {
+    document.getElementById('adminStats').innerHTML = `<p style="color:var(--accent-red)">Erreur de chargement : ${err.message}</p>`;
+  }
+}
     <div class="stat-box"><span class="val">${DB_CEJOUR.getAll().length}</span><span class="lbl">Ce jour-là</span></div>
     <div class="stat-box"><span class="val">${todayCount}</span><span class="lbl">Aujourd'hui</span></div>
   `;
